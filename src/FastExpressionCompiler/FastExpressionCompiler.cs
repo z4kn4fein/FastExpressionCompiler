@@ -1,7 +1,7 @@
 /*
 The MIT License (MIT)
 
-Copyright (c) 2016 Maksim Volkau
+Copyright (c) 2016-2017 Maksim Volkau
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -2606,6 +2606,12 @@ namespace FastExpressionCompiler
         public static ExpressionInfo Invoke(LambdaExpressionInfo lambda, params object[] args)
         {
             return new InvocationExpressionInfo(lambda, args, lambda.Type);
+        }
+
+        /// <summary>Parameter</summary>
+        public static ParameterExpressionInfo Parameter(Type type, string name = null)
+        {
+            return new ParameterExpressionInfo(type, name);
         }
     }
 
