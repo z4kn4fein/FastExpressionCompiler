@@ -266,11 +266,23 @@ namespace FastExpressionCompiler
             var closureObject = closureInfo.ConstructClosure(closureTypeOnly: isNestedLambda);
             var closureAndParamTypes = GetClosureAndParamTypes(paramTypes, closureInfo.ClosureType);
 
-            var methodWithClosure = new DynamicMethod(string.Empty, returnType, closureAndParamTypes,
-                typeof(ExpressionCompiler), skipVisibility: true);
+            //var methodWithClosure = new DynamicMethod(string.Empty, returnType, closureAndParamTypes,
+            //    typeof(ExpressionCompiler), skipVisibility: true);
+
+            //if (!TryEmit(methodWithClosure, exprObj, exprNodeType, exprType, paramExprs, closureInfo))
+            //    return null;
+
+            var dyn = AppDomain.CurrentDomain.DefineDynamicAssembly(new AssemblyName("Emitted"), AssemblyBuilderAccess.Save, "c:\\temp");
+            var mod = dyn.DefineDynamicModule("Emitted", "Emitted.dll");
+            var typ = mod.DefineType("EmittedNS.EmittedType", TypeAttributes.Public);
+
+            var methodWithClosure = typ.DefineMethod("nojrwonfreonre", MethodAttributes.Public | MethodAttributes.Static, returnType, closureAndParamTypes);
 
             if (!TryEmit(methodWithClosure, exprObj, exprNodeType, exprType, paramExprs, closureInfo))
                 return null;
+
+            var t = typ.CreateType();
+            dyn.Save("Emitted.dll");
 
             // todo: Use sugar TryCompileStaticDelegate?
             if (isNestedLambda) // include closure as the first parameter, BUT don't bound to it. It will be bound later in EmitNestedLambda.
@@ -285,13 +297,13 @@ namespace FastExpressionCompiler
             var method = new DynamicMethod(string.Empty, returnType, paramTypes,
                 typeof(ExpressionCompiler), skipVisibility: true);
 
-            if (!TryEmit(method, exprObj, exprNodeType, exprType, paramExprs, null))
-                return null;
+            //if (!TryEmit(method, exprObj, exprNodeType, exprType, paramExprs, null))
+            //    return null;
 
             return method.CreateDelegate(delegateType);
         }
 
-        private static bool TryEmit(DynamicMethod method,
+        private static bool TryEmit(MethodBuilder method,
             object exprObj, ExpressionType exprNodeType, Type exprType,
             IList<ParameterExpression> paramExprs, ClosureInfo closureInfo)
         {
@@ -353,7 +365,8 @@ namespace FastExpressionCompiler
             // Known after ConstructClosure call
             public int ClosedItemCount { get; private set; }
 
-            public Stack<BlockExpression> OpenedBlocks = new Stack<BlockExpression>();
+            // For tracking opened blocks to decide we are inside in a block or not
+            public readonly Stack<BlockExpression> OpenedBlocks = new Stack<BlockExpression>();
 
             public void AddConstant(object expr, object value, Type type)
             {
@@ -405,7 +418,7 @@ namespace FastExpressionCompiler
 
                 // Construct the array based closure when number of values is bigger than
                 // number of fields in biggest supported Closure class.
-                if (totalItemCount > closureCreateMethods.Length)
+                if (totalItemCount > 0)
                 {
                     ClosureType = typeof(ArrayClosure);
 
@@ -416,8 +429,6 @@ namespace FastExpressionCompiler
                     if (constants.Length != 0)
                         for (var i = 0; i < constants.Length; i++)
                             items[i] = constants[i].Value;
-
-                    // skip non passed parameters as it is only for nested lambdas
 
                     if (nestedLambdas.Length != 0)
                         for (var i = 0; i < nestedLambdas.Length; i++)
@@ -1211,11 +1222,11 @@ namespace FastExpressionCompiler
 
             private static bool EmitBlock(BlockExpression exprObj, IList<ParameterExpression> paramExprs, ILGenerator il, ClosureInfo closure)
             {
-                closure.OpenedBlocks.Push(exprObj);
+                closure.OpenedBlocks.Push(exprObj); // enter the given block
                 if (!EmitMany(exprObj.Expressions, paramExprs, il, closure))
                     return false;
 
-                closure.OpenedBlocks.Pop();
+                closure.OpenedBlocks.Pop(); // exit from the block
                 return true;
             }
 
@@ -1800,11 +1811,11 @@ namespace FastExpressionCompiler
 
                         il.Emit(OpCodes.Ldarg_0); // closure is always a first argument
 
-                        if (!TryEmit(right, rightNodeType, exprType, paramExprs, il, closure))
-                            return false;
-
                         if (noBlockOrisBlockResult)
                         {
+                            if (!TryEmit(right, rightNodeType, exprType, paramExprs, il, closure))
+                                return false;
+
                             var valueVar = il.DeclareLocal(exprType); // store left value in variable
                             if (closure.Fields != null)
                             {
@@ -1819,28 +1830,32 @@ namespace FastExpressionCompiler
                                 il.Emit(OpCodes.Ldfld, ArrayClosure.ArrayField); // load array field
                                 EmitLoadConstantInt(il, paramInClosureIndex); // load array item index
                                 il.Emit(OpCodes.Ldloc, valueVar);
+                                if (exprType.GetTypeInfo().IsValueType)
+                                    il.Emit(OpCodes.Box, exprType);
                                 il.Emit(OpCodes.Stelem_Ref); // put the variable into array
                                 il.Emit(OpCodes.Ldloc, valueVar);
-
-                                // Cast or unbox the array object item depending if it is a class or value type
-                                if (exprType.GetTypeInfo().IsValueType)
-                                    il.Emit(OpCodes.Unbox_Any, exprType);
-                                else
-                                    il.Emit(OpCodes.Castclass, exprType);
                             }
                         }
                         else
                         {
-                            if (closure.Fields != null)
-                            {
-                                il.Emit(OpCodes.Stfld, closure.Fields[paramInClosureIndex]);
-                            }
-                            else
+                            var isArrayClosure = closure.Fields == null;
+                            if (isArrayClosure)
                             {
                                 il.Emit(OpCodes.Ldfld, ArrayClosure.ArrayField); // load array field
                                 EmitLoadConstantInt(il, paramInClosureIndex); // load array item index
+                            }
+
+                            if (!TryEmit(right, rightNodeType, exprType, paramExprs, il, closure))
+                                return false;
+
+                            if (isArrayClosure)
+                            {
+                                if (exprType.GetTypeInfo().IsValueType)
+                                    il.Emit(OpCodes.Box, exprType);
                                 il.Emit(OpCodes.Stelem_Ref); // put the variable into array
                             }
+                            else
+                                il.Emit(OpCodes.Stfld, closure.Fields[paramInClosureIndex]);
                         }
                         return true;
 
