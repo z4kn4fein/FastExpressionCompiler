@@ -30,11 +30,10 @@ namespace FastExpressionCompiler.UnitTests
         public void Block_local_variable_assignment_with_lambda()
         {
             var variable = Variable(typeof(int));
-            var variable2 = Variable(typeof(int));
 
-            var block = Block(new[] { variable, variable2 },
+            var block = Block(new[] { variable },
                 Assign(variable, Constant(5)),
-                Invoke(Lambda(Assign(variable2, Constant(6)))));
+                Invoke(Lambda(Assign(variable, Constant(6)))));
 
             var lambda = Lambda<Func<int>>(block);
 
@@ -46,7 +45,7 @@ namespace FastExpressionCompiler.UnitTests
 
         [Test]
         public void Block_local_variable_assignment_with_lambda_with_param()
-        {
+         {
             var variable = Variable(typeof(int));
             var variable2 = Variable(typeof(int));
             var param = Parameter(typeof(int));

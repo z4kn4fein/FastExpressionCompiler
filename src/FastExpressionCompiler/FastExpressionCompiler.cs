@@ -266,27 +266,38 @@ namespace FastExpressionCompiler
             var closureObject = closureInfo.ConstructClosure(closureTypeOnly: isNestedLambda);
             var closureAndParamTypes = GetClosureAndParamTypes(paramTypes, closureInfo.ClosureType);
 
-            //var methodWithClosure = new DynamicMethod(string.Empty, returnType, closureAndParamTypes,
-            //    typeof(ExpressionCompiler), skipVisibility: true);
+            if (isNestedLambda) // include closure as the first parameter, BUT don't bound to it. It will be bound later in EmitNestedLambda.
+            {
+                var methodWithClosuren = new DynamicMethod(string.Empty, returnType, closureAndParamTypes,
+                    typeof(ExpressionCompiler), skipVisibility: true);
+
+                if (!TryEmit(methodWithClosuren, exprObj, exprNodeType, exprType, paramExprs, closureInfo))
+                    return null;
+
+                return methodWithClosuren.CreateDelegate(GetFuncOrActionType(closureAndParamTypes, returnType));
+            }
+
+            //var dyn = AppDomain.CurrentDomain.DefineDynamicAssembly(new AssemblyName("Emitted"), AssemblyBuilderAccess.Save, "c:\\temp");
+            //var mod = dyn.DefineDynamicModule("Emitted", "Emitted.dll");
+            //var typ = mod.DefineType("EmittedNS.EmittedType", TypeAttributes.Public);
+
+            //var methodWithClosure = typ.DefineMethod("nojrwonfreonre", MethodAttributes.Public | MethodAttributes.Static, returnType, closureAndParamTypes);
 
             //if (!TryEmit(methodWithClosure, exprObj, exprNodeType, exprType, paramExprs, closureInfo))
             //    return null;
 
-            var dyn = AppDomain.CurrentDomain.DefineDynamicAssembly(new AssemblyName("Emitted"), AssemblyBuilderAccess.Save, "c:\\temp");
-            var mod = dyn.DefineDynamicModule("Emitted", "Emitted.dll");
-            var typ = mod.DefineType("EmittedNS.EmittedType", TypeAttributes.Public);
+            //var t = typ.CreateType();
+            //dyn.Save("Emitted.dll");
 
-            var methodWithClosure = typ.DefineMethod("nojrwonfreonre", MethodAttributes.Public | MethodAttributes.Static, returnType, closureAndParamTypes);
+            // todo: Use sugar TryCompileStaticDelegate?
+            //if (isNestedLambda) // include closure as the first parameter, BUT don't bound to it. It will be bound later in EmitNestedLambda.
+            //    return methodWithClosure.CreateDelegate(GetFuncOrActionType(closureAndParamTypes, returnType));
+
+            var methodWithClosure = new DynamicMethod(string.Empty, returnType, closureAndParamTypes,
+                typeof(ExpressionCompiler), skipVisibility: true);
 
             if (!TryEmit(methodWithClosure, exprObj, exprNodeType, exprType, paramExprs, closureInfo))
                 return null;
-
-            var t = typ.CreateType();
-            dyn.Save("Emitted.dll");
-
-            // todo: Use sugar TryCompileStaticDelegate?
-            if (isNestedLambda) // include closure as the first parameter, BUT don't bound to it. It will be bound later in EmitNestedLambda.
-                return methodWithClosure.CreateDelegate(GetFuncOrActionType(closureAndParamTypes, returnType));
 
             return methodWithClosure.CreateDelegate(delegateType, closureObject);
         }
@@ -297,13 +308,25 @@ namespace FastExpressionCompiler
             var method = new DynamicMethod(string.Empty, returnType, paramTypes,
                 typeof(ExpressionCompiler), skipVisibility: true);
 
-            //if (!TryEmit(method, exprObj, exprNodeType, exprType, paramExprs, null))
-            //    return null;
+            if (!TryEmit(method, exprObj, exprNodeType, exprType, paramExprs, null))
+                return null;
 
             return method.CreateDelegate(delegateType);
         }
 
         private static bool TryEmit(MethodBuilder method,
+            object exprObj, ExpressionType exprNodeType, Type exprType,
+            IList<ParameterExpression> paramExprs, ClosureInfo closureInfo)
+        {
+            var il = method.GetILGenerator();
+            if (!EmittingVisitor.TryEmit(exprObj, exprNodeType, exprType, paramExprs, il, closureInfo))
+                return false;
+
+            il.Emit(OpCodes.Ret); // emits return from generated method
+            return true;
+        }
+
+        private static bool TryEmit(DynamicMethod method,
             object exprObj, ExpressionType exprNodeType, Type exprType,
             IList<ParameterExpression> paramExprs, ClosureInfo closureInfo)
         {
@@ -355,6 +378,9 @@ namespace FastExpressionCompiler
             // All nested lambdas recursively nested in expression
             public NestedLambdaInfo[] NestedLambdas = Tools.Empty<NestedLambdaInfo>();
 
+            // All variables defined in the closure
+            public ParameterExpression[] DefinedVariables = Tools.Empty<ParameterExpression>();
+
             // Field infos are needed to load field of closure object on stack in emitter
             // It is also an indicator that we use typed Closure object and not an array
             public FieldInfo[] Fields { get; private set; }
@@ -387,6 +413,15 @@ namespace FastExpressionCompiler
                 if (NonPassedParameters.Length == 0 ||
                     NonPassedParameters.GetFirstIndex(expr) == -1)
                     NonPassedParameters = NonPassedParameters.WithLast(expr);
+            }
+
+            public void AddDefinedVariable(ParameterExpression expr)
+            {
+                if (DefinedVariables.Length == 0 ||
+                    DefinedVariables.GetFirstIndex(expr) == -1)
+                    DefinedVariables = DefinedVariables.WithLast(expr);
+
+                AddNonPassedParam(expr);
             }
 
             public void AddNestedLambda(object lambdaExpr, object lambda, ClosureInfo closureInfo, bool isAction)
@@ -990,7 +1025,7 @@ namespace FastExpressionCompiler
                         {
                             var nestedNonPassedParam = nestedNonPassedParams[i];
                             if (paramExprs.Count == 0 ||
-                                paramExprs.IndexOf(nestedNonPassedParam) == -1)
+                                paramExprs.IndexOf(nestedNonPassedParam) == -1 && nestedClosure.DefinedVariables.GetFirstIndex(nestedNonPassedParam) == -1)
                                 closure.AddNonPassedParam(nestedNonPassedParam);
                         }
 
@@ -1033,7 +1068,7 @@ namespace FastExpressionCompiler
                     var blockExpr = (BlockExpression)exprObj;
                     var length = blockExpr.Variables.Count;
                     for (var i = 0; i < length; i++)
-                        (closure ?? (closure = new ClosureInfo())).AddNonPassedParam(blockExpr.Variables[i]);
+                        (closure ?? (closure = new ClosureInfo())).AddDefinedVariable(blockExpr.Variables[i]);
 
                     return TryCollectBoundConstants(ref closure, blockExpr.Expressions, paramExprs);
 
@@ -1774,7 +1809,7 @@ namespace FastExpressionCompiler
                 // if this assignment is part of a single bodyless expression or the result of a block
                 // we should put it's result to the evaluation stack before the return, otherwise we are
                 // somewhere inside the block, so we shouldn't return with the result
-                var noBlockOrisBlockResult = block == null || block.Result == exprObj;
+                var shouldPushResult = block == null || block.Result == exprObj;
 
                 switch (leftNodeType)
                 {
@@ -1791,7 +1826,7 @@ namespace FastExpressionCompiler
                             if (!TryEmit(right, rightNodeType, exprType, paramExprs, il, closure))
                                 return false;
 
-                            if (noBlockOrisBlockResult)
+                            if (shouldPushResult)
                                 il.Emit(OpCodes.Dup); // dup value to assign and return
 
                             il.Emit(OpCodes.Starg_S, paramIndex);
@@ -1811,7 +1846,7 @@ namespace FastExpressionCompiler
 
                         il.Emit(OpCodes.Ldarg_0); // closure is always a first argument
 
-                        if (noBlockOrisBlockResult)
+                        if (shouldPushResult)
                         {
                             if (!TryEmit(right, rightNodeType, exprType, paramExprs, il, closure))
                                 return false;
@@ -1884,7 +1919,7 @@ namespace FastExpressionCompiler
                         if (!TryEmit(right, rightNodeType, exprType, paramExprs, il, closure))
                             return false;
 
-                        if (!noBlockOrisBlockResult)
+                        if (!shouldPushResult)
                             return EmitMemberAssign(il, member);
 
                         il.Emit(OpCodes.Dup);
@@ -2100,7 +2135,7 @@ namespace FastExpressionCompiler
                 for (var nestedParamIndex = 0; nestedParamIndex < nestedNonPassedParams.Length; nestedParamIndex++)
                 {
                     var nestedUsedParam = nestedNonPassedParams[nestedParamIndex];
-
+                    
                     // Duplicate nested array on stack to store the item, and load index to where to store
                     if (isNestedArrayClosure)
                     {
@@ -2119,15 +2154,21 @@ namespace FastExpressionCompiler
                         if (outerNonPassedParams.Length == 0)
                             return false; // impossible, better to throw?
 
-                        var outerParamIndex = outerNonPassedParams.GetFirstIndex(nestedUsedParam);
-                        if (outerParamIndex == -1)
-                            return false; // impossible, better to throw?
-
-                        il.Emit(OpCodes.Ldarg_0); // closure is always a first argument
-                        if (closure.Fields != null)
-                            il.Emit(OpCodes.Ldfld, closure.Fields[outerConstants.Length + outerParamIndex]);
+                        // if this param is a defined var by the nested lambda, create a null placeholder
+                        if(nestedClosureInfo.DefinedVariables.GetFirstIndex(nestedUsedParam) != -1)
+                            il.Emit(OpCodes.Ldnull);
                         else
-                            LoadArrayClosureItem(il, outerConstants.Length + outerParamIndex, nestedUsedParam.Type);
+                        {
+                            var outerParamIndex = outerNonPassedParams.GetFirstIndex(nestedUsedParam);
+                            if (outerParamIndex == -1)
+                                return false; // impossible, better to throw?
+
+                            il.Emit(OpCodes.Ldarg_0); // closure is always a first argument
+                            if (closure.Fields != null)
+                                il.Emit(OpCodes.Ldfld, closure.Fields[outerConstants.Length + outerParamIndex]);
+                            else
+                                LoadArrayClosureItem(il, outerConstants.Length + outerParamIndex, nestedUsedParam.Type);
+                        }
                     }
 
                     if (isNestedArrayClosure)
